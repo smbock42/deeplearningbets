@@ -879,8 +879,7 @@ def predict_for_date(model, scaler_X, scaler_y, feature_cols, ticker='TSLA',
     
     return result
 
-
-def create_advanced_visualizations(predictions, actuals, dates, close_prices, ticker='UNKNOWN', threshold=0.5, generate_images=True):
+def create_advanced_visualizations(predictions, actuals, dates, close_prices, ticker='UNKNOWN', threshold=0.5):
     """
     Create advanced visualizations for stock predictions including:
     - Actual vs Predicted Price Charts
@@ -898,6 +897,7 @@ def create_advanced_visualizations(predictions, actuals, dates, close_prices, ti
     Returns:
         Trading performance metrics
     """
+    # Convert predictions and actuals to numpy arrays if they're not already
     predictions = np.array(predictions).flatten()
     actuals = np.array(actuals).flatten()
     close_prices = np.array(close_prices)
@@ -910,28 +910,27 @@ def create_advanced_visualizations(predictions, actuals, dates, close_prices, ti
         'Close': close_prices
     })
     
+    # Calculate predicted prices
+    df['Predicted_Price'] = df['Close'] * (1 + df['Predicted_Change'] / 100)
+    
+    # Calculate next day's actual price
+    df['Next_Day_Price'] = df['Close'].shift(-1)
+    
     # Generate trading signals (1 for buy, -1 for sell, 0 for hold)
-    # FIXED: Better signal logic based on predictions crossing threshold
     df['Signal'] = 0
     df.loc[df['Predicted_Change'] > threshold, 'Signal'] = 1  # Buy signal
     df.loc[df['Predicted_Change'] < -threshold, 'Signal'] = -1  # Sell signal
     
-    # Calculate daily returns
-    df['Daily_Return'] = df['Close'].pct_change().fillna(0)
+    # Simulate trading performance
+    df['Position'] = df['Signal'].shift(1)  # Position taken the previous day
+    df['Position'].fillna(0, inplace=True)  # No position on first day
     
-    # IMPROVED TRADING STRATEGY: Hold position until signal changes
-    df['Position'] = df['Signal']
-    # Forward fill to maintain positions
-    df['Position'] = df['Position'].replace(to_replace=0, method='ffill')
-    # Set first position (no previous signal)
-    if df['Position'].iloc[0] == 0:
-        df['Position'].iloc[0] = 1  # Default to buy
-    
-    # Calculate strategy returns
-    df['Strategy_Return'] = df['Position'] * df['Daily_Return'] 
+    # Calculate returns
+    df['Market_Return'] = df['Close'].pct_change()  # Buy and hold return
+    df['Strategy_Return'] = df['Position'] * df['Market_Return']  # Strategy return
     
     # Calculate cumulative returns
-    df['Cumulative_Market_Return'] = (1 + df['Daily_Return']).cumprod() - 1
+    df['Cumulative_Market_Return'] = (1 + df['Market_Return']).cumprod() - 1
     df['Cumulative_Strategy_Return'] = (1 + df['Strategy_Return']).cumprod() - 1
     
     # 1. Actual vs Predicted Price Chart
@@ -1093,7 +1092,6 @@ def create_advanced_visualizations(predictions, actuals, dates, close_prices, ti
     }
     
     return performance_metrics, df
-
 def simulate_investment(ticker, model, scaler_X, scaler_y, feature_cols, seq_length, 
                        investment_date, investment_amount=1000, target_type='pct_change',
                        days_to_hold=30, threshold=0.5):
@@ -1237,14 +1235,16 @@ def simulate_investment(ticker, model, scaler_X, scaler_y, feature_cols, seq_len
     df['Signal'] = 0
     df.loc[df['Predicted_Change'] > threshold, 'Signal'] = 1  # Buy signal
     df.loc[df['Predicted_Change'] < -threshold, 'Signal'] = -1  # Sell signal
-    
+
+    # Ensure predicted price is calculated if missing
+    df['Predicted_Price'] = df['Close'].shift(1) * (1 + df['Predicted_Change'] / 100)    
     # Calculate daily returns
     df['Daily_Return'] = df['Close'].pct_change().fillna(0)
 
     
     # Simulate trading strategy
     df['Position'] = df['Signal']
-    df['Position'] = df['Position'].replace(to_replace=0, method='ffill')
+    df['Position'] = df['Position'].ffill()
     
     if df['Position'].iloc[0] == 0:
         df['Position'].iloc[0] = 1  # Default to buy
@@ -1415,43 +1415,47 @@ if __name__ == "__main__":
         dates=test_dates,
         close_prices=close_test,
         ticker=config['ticker'],
-        threshold=0.5  # Threshold for buy/sell signals (0.5% change)
+        threshold=0.1  # Threshold for buy/sell signals (0.5% change)
     )
 
-    # Test different thresholds to find optimal signal generation
+
+
+   # Test different thresholds to find optimal signal generation
     print(f"\nTesting different signal thresholds...")
-    thresholds = [0.1, 0.15, 0.2, 0.25]
+    thresholds = [.01, .05, .1, .15, .2]  # 1%, 5%, 10%, 15%, 20%
     results = {}
 
     for thresh in thresholds:
         print(f"\nTesting threshold: {thresh}%")
-        temp_metrics, _ = create_advanced_visualizations(
+        results[thresh], _ = create_advanced_visualizations(
             predictions=evaluation['Predictions'],
             actuals=evaluation['Actuals'],
             dates=test_dates,
             close_prices=close_test,
-            ticker=config['ticker'],  # Don't change ticker name
-            threshold=thresh,
-            generate_images=False  # Add this parameter to suppress image generation
+            ticker=f"{config['ticker']}_{thresh}",
+            threshold=thresh
         )
-        results[thresh] = temp_metrics
 
     # Find the best performing threshold
     best_thresh = max(results, key=lambda x: results[x]['Strategy_Return'])
     print(f"\nBest performing threshold: {best_thresh}%")
     print(f"Return with best threshold: {results[best_thresh]['Strategy_Return']:.2f}%")
 
-    # Generate images only for the best threshold
-    performance_metrics, trading_df = create_advanced_visualizations(
-        predictions=evaluation['Predictions'],
-        actuals=evaluation['Actuals'],
-        dates=test_dates,
-        close_prices=close_test,
+    # Simulate investment starting from February 17, 2025
+    print(f"\nSimulating specific investment scenario...")
+    investment_metrics = simulate_investment(
         ticker=config['ticker'],
-        threshold=best_thresh,
-        generate_images=True  # Generate images for the best threshold
+        model=model,
+        scaler_X=scaler_X, 
+        scaler_y=scaler_y,
+        feature_cols=feature_cols,
+        seq_length=config['seq_length'],
+        investment_date='2025-02-17',  # One month ago
+        investment_amount=1000,
+        target_type=config['target_type'],
+        days_to_hold=30,  # Hold for 30 days
+        threshold=best_thresh  # Use the best threshold from previous testing
     )
-
     
     create_performance_summary_chart(investment_metrics, config['ticker'])
 
